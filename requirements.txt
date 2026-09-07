@@ -1,0 +1,11 @@
+# Superseded by pyproject.toml -- kept only so an old habit still works.
+#
+#   uv pip install "git+https://github.com/hongttisme/rgb2gray.git"
+#
+# installs these three plus the console scripts.  The one optional extra is
+# `gpu` (PyTorch, for GPU mode); see [project.optional-dependencies].
+# tkinter is not installable from pip -- Debian/Ubuntu: sudo apt install python3-tk
+
+pillow>=10.0
+numpy>=1.24
+opencv-python>=4.8

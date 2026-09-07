@@ -1,0 +1,65 @@
+# Installable straight from the repo:
+#
+#   uv pip install "git+https://github.com/hongttisme/rgb2gray.git"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rgb2gray"
+dynamic = ["version"]        # single source of truth: src/rgb2gray/__init__.py
+description = "Batch-convert image datasets to 8-bit grayscale, folder structure and JSON annotations preserved"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Tan Wai Hong" }]
+keywords = ["grayscale", "image-processing", "dataset", "batch", "bmp", "tkinter"]
+classifiers = [
+    "Environment :: X11 Applications",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+]
+
+# tkinter is deliberately absent: it ships with CPython and is not installable
+# from PyPI.  On Debian/Ubuntu the GUI needs `sudo apt install python3-tk`.
+dependencies = [
+    "pillow>=10.0",        # every read; the default encoder for every write
+    "numpy>=1.24",         # array plumbing for GPU mode
+    # The second *encoder*, selectable in the UI.  Still imported lazily by
+    # ``gray_core.cv2_module`` -- the app survives its absence with the control
+    # greyed out -- but it ships by default because it is the only encoder that
+    # writes PNG `rle`, which is the format table's 4.6x-smaller row.
+    # `opencv-python`, not `-headless`: this is a desktop GUI app, so the GL
+    # libraries are present anyway, and the headless build would collide with
+    # the plain one in any environment that already has it.
+    "opencv-python>=4.8",
+]
+
+[project.optional-dependencies]
+# GPU mode only, imported lazily.  NOTE: this pulls the CPU-only wheel on
+# Linux -- for CUDA install the matching wheel yourself, see README.
+gpu = ["torch>=2.1"]
+
+[project.urls]
+Homepage = "https://github.com/hongttisme/rgb2gray"
+
+# gui-scripts, not scripts: on Windows this shim runs under pythonw.exe so the
+# GUI starts without a console window behind it.  On Linux the two are identical.
+[project.gui-scripts]
+rgb2gray = "rgb2gray.app:main"
+
+[project.scripts]
+rgb2gray-selftest = "rgb2gray.selftest:main"
+
+# One place to bump, and it is the one the running code reports.  A literal
+# here plus a literal ``__version__`` drift the moment you bump only one.
+[tool.hatch.version]
+path = "src/rgb2gray/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rgb2gray"]
+
+# The screenshots are documentation, not payload -- keep them out of the sdist.
+[tool.hatch.build.targets.sdist]
+exclude = ["screenshot.png", "all result.jpeg", "dist/"]
