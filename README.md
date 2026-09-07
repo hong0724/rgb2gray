@@ -25,7 +25,7 @@ rgb2gray/
 
 ```bash
 sudo apt install python3-tk        # Debian/Ubuntu only -- see below
-uv pip install "git+https://github.com/hongttisme/rgb2gray.git"
+uv pip install "git+https://github.com/hong0724/rgb2gray.git"
 
 rgb2gray                           # or: python -m rgb2gray
 ```
@@ -40,8 +40,8 @@ Because this is a GUI tool, an isolated install is tidier than dropping it into
 a shared environment; the command still lands on `$PATH`:
 
 ```bash
-uv tool install "git+https://github.com/hongttisme/rgb2gray.git"
-# or:  pipx install "git+https://github.com/hongttisme/rgb2gray.git"
+uv tool install "git+https://github.com/hong0724/rgb2gray.git"
+# or:  pipx install "git+https://github.com/hong0724/rgb2gray.git"
 ```
 
 To pin a revision, put it on the URL: `...rgb2gray.git@v1.0`.
@@ -50,7 +50,7 @@ To pin a revision, put it on the URL: `...rgb2gray.git@v1.0`.
 re-install is a no-op once it is already installed. Force it:
 
 ```bash
-uv pip install --force-reinstall --no-deps "git+https://github.com/hongttisme/rgb2gray.git"
+uv pip install --force-reinstall --no-deps "git+https://github.com/hong0724/rgb2gray.git"
 ```
 
 **One optional extra**, `gpu`, for PyTorch — imported lazily, and the app runs
@@ -58,13 +58,13 @@ with GPU mode greyed out when it is absent. Read the wheel note below before
 using it, because on Linux it installs the CPU-only build:
 
 ```bash
-uv pip install "rgb2gray[gpu] @ git+https://github.com/hongttisme/rgb2gray.git"
+uv pip install "rgb2gray[gpu] @ git+https://github.com/hong0724/rgb2gray.git"
 ```
 
 **Working on the code instead:**
 
 ```bash
-git clone https://github.com/hongttisme/rgb2gray.git
+git clone https://github.com/hong0724/rgb2gray.git
 uv pip install -e rgb2gray        # edits take effect immediately
 rgb2gray-selftest                 # 107 correctness checks
 ```

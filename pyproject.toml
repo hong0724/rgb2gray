@@ -1,6 +1,6 @@
 # Installable straight from the repo:
 #
-#   uv pip install "git+https://github.com/hongttisme/rgb2gray.git"
+#   uv pip install "git+https://github.com/hong0724/rgb2gray.git"
 
 [build-system]
 requires = ["hatchling"]
@@ -42,7 +42,7 @@ dependencies = [
 gpu = ["torch>=2.1"]
 
 [project.urls]
-Homepage = "https://github.com/hongttisme/rgb2gray"
+Homepage = "https://github.com/hong0724/rgb2gray"
 
 # gui-scripts, not scripts: on Windows this shim runs under pythonw.exe so the
 # GUI starts without a console window behind it.  On Linux the two are identical.

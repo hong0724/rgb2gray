@@ -1,6 +1,6 @@
 # Superseded by pyproject.toml -- kept only so an old habit still works.
 #
-#   uv pip install "git+https://github.com/hongttisme/rgb2gray.git"
+#   uv pip install "git+https://github.com/hong0724/rgb2gray.git"
 #
 # installs these three plus the console scripts.  The one optional extra is
 # `gpu` (PyTorch, for GPU mode); see [project.optional-dependencies].
