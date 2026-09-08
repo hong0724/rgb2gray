@@ -75,7 +75,7 @@ class ConverterApp(tk.Tk):
         self.var_encoder = tk.StringVar(value=gc.DEFAULT_ENCODER)
         self.var_strategy = tk.StringVar(value=gc.DEFAULT_PNG_STRATEGY)
         self.var_skip_existing = tk.BooleanVar(value=False)
-        self.var_log = tk.BooleanVar(value=False)
+        self.var_log = tk.BooleanVar(value=True)
         self.var_log_path = tk.StringVar()
 
         self.gpu_device, self.gpu_reason = gc.detect_gpu()
@@ -86,6 +86,10 @@ class ConverterApp(tk.Tk):
         self._sync_mode_widgets()
         self._sync_format_note()
         self._sync_log_row()
+        # The log box is ticked by default, so the path has to follow every way
+        # the output folder can be set -- browsed, typed, or derived from the
+        # input folder.  Without this an empty path silently writes no log.
+        self.var_output.trace_add("write", lambda *_: self._sync_log_row())
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(self.POLL_MS, self._tick)
@@ -713,6 +717,14 @@ class ConverterApp(tk.Tk):
                 self._log(f"log     NOT written to {path} — {st.log_error}", "err")
             else:
                 self._log(f"logged  {path}", "dim")
+            # The failure list is a second file, so it gets its own line -- the
+            # errors above scroll away, this is where they were kept.
+            if st.failures_error:
+                self._log(f"failed  list NOT written — {st.failures_error}", "err")
+            elif st.failures_path:
+                kept = f"{len(st.errors):,} of {st.failed:,}" \
+                    if len(st.errors) < st.failed else f"{st.failed:,}"
+                self._log(f"failed  {kept} listed in {st.failures_path}", "dim")
 
     # -------------------------------------------------------------- cancel
     def _on_cancel(self) -> None:

@@ -224,19 +224,45 @@ default everywhere.
 ### Run log
 
 Ticking *Log this run* appends one row to a `.csv`, writing the header only when
-the file is new. 45 columns in five groups: when and where, the settings, the
-result, the timing, what the scan found but did not convert, and the machine.
-The header names them all; the ones worth knowing in advance:
+the file is new. 49 columns in seven groups: when and where, the settings, the
+result, the timing, what the scan found but did not convert, the machine, and
+what failed. The header names them all; the ones worth knowing in advance:
 
+* `run_id` identifies the run — `20260908T105224-210c`, sortable, and unique
+  even for two runs that start in the same second. It is what joins this file
+  to the failure log below.
 * `workers` is the pipeline width, `os_workers` what it cost.
 * `estimated_s` is the duration predicted once 100 images are done, and
-  `estimate_error_pct` the signed error against it — a shorter run leaves both
-  empty, deliberately.
+  `estimate_time_error_pct` the signed error against it — a shorter run leaves
+  both empty, deliberately.
 * `source_formats` is a histogram cell, `BMP:40 PNG:3`, taken from file content.
 * `compression_level` is empty for BMP and TIFF, which have no control.
 * `encoder` and `png_strategy` say who wrote the file — without them a batch of
   comparison runs cannot be attributed. 
 * The `gpu*` columns come from `nvidia-smi` and are empty without it.
+* `error_kinds` is a histogram cell like `source_formats` —
+  `decode:OSError:38 unreadable:2` — counted over **every** failure, never
+  truncated. `first_error` is one example spelled out in full.
+* `failures_logged` is how many failures reached the failure log. It equals
+  `failed` unless the run blew past the 10,000-file detail cap, which is the
+  only way a short list can mean an incomplete one.
+
+### Failure log
+
+`failed` tells you how many; it cannot tell you *which*, because the run log is
+one row per run and a run has 0..n failures. So when — and only when — a run
+fails, a sibling file appears next to the run log: `runs.csv` gets
+`runs_failures.csv`, one row per failed file.
+
+```csv
+run_id,timestamp,src,error_kind,error
+20260908T105224-210c,2026-09-08T10:52:24+0800,/data/in/corrupt.bmp,unreadable,not a readable image (content does not match any known format)
+20260908T105224-210c,2026-09-08T10:52:24+0800,/data/in/sub/zero.bmp,unreadable,not a readable image (content does not match any known format)
+```
+
+That is a work list: the paths to re-run, or to drop from the dataset. Join it
+back to the run log on `run_id` for the settings the failures happened under.
+A clean history never grows the file at all.
 
 
 ---

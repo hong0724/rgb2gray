@@ -286,6 +286,11 @@ class FileResult:
     src: str
     ok: bool
     error: str | None = None
+    # A short, stable label for what went wrong -- "decode:OSError", "write:
+    # OSError", "unreadable".  Set where the failure is raised, never parsed
+    # back out of ``error``: the messages are free text and one of them carries
+    # no exception name at all.
+    error_kind: str = ""
     bytes_in: int = 0
     bytes_out: int = 0
     ann_copied: bool = False
@@ -320,8 +325,21 @@ class RunStats:
     encoder: str = ""                  # pillow | opencv
     png_strategy: str = ""             # only meaningful for PNG via OpenCV
     formats_seen: dict[str, int] = field(default_factory=dict)
-    errors: list[tuple[str, str]] = field(default_factory=list)
+    #: ``(src, kind, message)`` per failed file, capped -- the detail the
+    #: failure log writes.  Bounded because a run can fail on every one of a
+    #: million files; :attr:`error_kinds` is what stays complete.
+    errors: list[tuple[str, str, str]] = field(default_factory=list)
+    #: Every failure counted by kind, never truncated: cardinality is the
+    #: number of distinct faults, not the number of files.
+    error_kinds: dict[str, int] = field(default_factory=dict)
     log_error: str | None = None       # why the run log was not written, if so
+    failures_path: str | None = None   # the failure log, once one exists
+    failures_error: str | None = None  # why it does not, if it should
+    #: Identifies this run in both logs -- the run log has one row per run, the
+    #: failure log many, and this is what joins them.  Second-resolution time
+    #: plus 4 random hex: sortable, and two runs in the same second still differ.
+    run_id: str = field(default_factory=lambda:
+                        time.strftime("%Y%m%dT%H%M%S") + "-" + os.urandom(2).hex())
 
     #: The two sample points the duration prediction is taken from.  Two rather
     #: than one because a single point divides the *fixed* start-up cost into
@@ -331,6 +349,12 @@ class RunStats:
     #: and leaves the marginal per-image cost.
     ESTIMATE_FROM = 25
     ESTIMATE_AFTER = 100
+
+    #: How many failures keep their per-file detail.  The failure log is meant
+    #: to be acted on -- re-run these, drop those -- and a list longer than this
+    #: is a broken run, not a work list.  ``failed`` and ``error_kinds`` stay
+    #: exact past the cap, and ``failures_logged`` says where it bit.
+    MAX_LOGGED_FAILURES = 10_000
 
     # -- derived ----------------------------------------------------------
     @property
@@ -367,8 +391,10 @@ class RunStats:
                     self.formats_seen.get(r.src_format, 0) + 1
         else:
             self.failed += 1
-            if len(self.errors) < 200:  # keep the log bounded
-                self.errors.append((r.src, r.error or "unknown error"))
+            kind = r.error_kind or "unknown"
+            self.error_kinds[kind] = self.error_kinds.get(kind, 0) + 1
+            if len(self.errors) < self.MAX_LOGGED_FAILURES:
+                self.errors.append((r.src, kind, r.error or "unknown error"))
         if r.ann_copied:
             self.ann_copied += 1
         if r.ann_rewritten:
@@ -740,7 +766,12 @@ def _cv_encode(gray: np.ndarray, fmt: OutputFormat) -> bytes:
     elif fmt.key == "jpeg":
         params = [cv2.IMWRITE_JPEG_QUALITY, fmt.effective_level or 95]
     elif fmt.key == "tiff":                       # match Pillow's tiff_lzw
-        params = [cv2.IMWRITE_TIFF_COMPRESSION, cv2.IMWRITE_TIFF_COMPRESSION_LZW]
+        # 5 is libtiff's COMPRESSION_LZW.  The named constant only arrived in
+        # OpenCV 4.10, while the parameter itself has worked since long before,
+        # so the literal is what keeps an older wheel writing LZW instead of
+        # failing every TIFF in the run.
+        lzw = getattr(cv2, "IMWRITE_TIFF_COMPRESSION_LZW", 5)
+        params = [cv2.IMWRITE_TIFF_COMPRESSION, lzw]
     ok, buf = cv2.imencode(fmt.suffix, gray, params)
     if not ok:
         raise RuntimeError(f"OpenCV could not encode {fmt.suffix}")
@@ -855,11 +886,13 @@ def cpu_convert_one(task: ConvertTask, fmt: OutputFormat) -> FileResult:
             ann_copied=copied, ann_rewritten=rewritten, src_format=src_format,
         )
     except UnidentifiedImageError:
-        return FileResult(src=src_str, ok=False,
+        return FileResult(src=src_str, ok=False, error_kind="unreadable",
                           error="not a readable image (content does not match any "
                                 "known format)")
     except Exception as exc:
-        return FileResult(src=src_str, ok=False, error=f"{type(exc).__name__}: {exc}")
+        return FileResult(src=src_str, ok=False,
+                          error_kind=type(exc).__name__,
+                          error=f"{type(exc).__name__}: {exc}")
 
 
 def run_cpu(
@@ -975,6 +1008,7 @@ def _encode_one(task: ConvertTask, gray: np.ndarray, nbytes: int,
                           ann_rewritten=rewritten, src_format=src_format)
     except Exception as exc:
         return FileResult(src=str(task.src), ok=False,
+                          error_kind=f"write:{type(exc).__name__}",
                           error=f"write: {type(exc).__name__}: {exc}")
 
 
@@ -996,8 +1030,10 @@ def _device_pass(items: list, dev, report) -> list:
         grays = gpu_gray_batch(batch, dev, LUMA_RGB)
     except Exception as exc:
         msg = f"{dev.type}: {type(exc).__name__}: {exc}"
+        kind = f"{dev.type}:{type(exc).__name__}"
         for task, _n, _f in meta:
-            report(FileResult(src=str(task.src), ok=False, error=msg))
+            report(FileResult(src=str(task.src), ok=False,
+                              error_kind=kind, error=msg))
         return []
     return [(t, grays[i], n, f) for i, (t, n, f) in enumerate(meta)]
 
@@ -1026,6 +1062,7 @@ def _gpu_serial(tasks, fmt, dev, batch_size, report, cancel, st) -> None:
             arr, src_format = _decode_rgb(task.src)
         except Exception as exc:
             report(FileResult(src=str(task.src), ok=False,
+                              error_kind=f"decode:{type(exc).__name__}",
                               error=f"decode: {type(exc).__name__}: {exc}"))
             continue
         if pending and arr.shape[:2] != pending[0][1].shape[:2]:
@@ -1138,6 +1175,7 @@ def run_gpu(
                     return
             except Exception as exc:
                 report(FileResult(src=str(task.src), ok=False,
+                                  error_kind=f"decode:{type(exc).__name__}",
                                   error=f"decode: {type(exc).__name__}: {exc}"))
 
     reader_threads = [
@@ -1251,7 +1289,7 @@ def _histogram_cell(counts: dict) -> str:
 #: appear here -- ``DictWriter`` silently drops anything that does not, and
 #: ``selftest.py`` asserts the two stay in step.
 RUN_LOG_COLUMNS = (
-    "timestamp", "input_dir", "output_dir",
+    "run_id", "timestamp", "input_dir", "output_dir",
     # what was asked for
     "mode", "device", "workers", "os_workers", "batch_size", "output_format",
     "compression_level", "encoder", "png_strategy",
@@ -1259,7 +1297,7 @@ RUN_LOG_COLUMNS = (
     "images", "converted", "failed", "cancelled",
     "annotations_copied", "annotations_rewritten", "source_formats",
     # timing
-    "estimated_s", "elapsed_s", "estimate_error_pct", "images_per_s",
+    "estimated_s", "elapsed_s", "estimate_time_error_pct", "images_per_s",
     "read_MB_s", "write_MB_s", "bytes_in", "bytes_out", "bytes_saved_pct",
     # what the scan found but did not convert
     "sub_folders", "unpaired_annotations", "non_image_files_skipped",
@@ -1268,23 +1306,25 @@ RUN_LOG_COLUMNS = (
     "cpu", "physical_cores", "logical_cpus", "ram_gb", "platform",
     "python", "pillow", "numpy", "torch",
     "gpu", "gpu_driver", "gpu_memory_MiB",
-    "first_error",
+    # what failed -- see the failure log, joined on run_id, for which files
+    "error_kinds", "failures_logged", "first_error",
 )
 
 
-def append_run_log(log_path: str | Path, record: dict) -> None:
-    """Append one CSV row per run, writing the header only for a new file.
+#: Column order of the failure log: one row per failed file, not per run.
+FAILURE_LOG_COLUMNS = ("run_id", "timestamp", "src", "error_kind", "error")
 
-    CSV rather than JSON so the log opens in a spreadsheet; the price is that
-    :func:`build_run_record` has to flatten everything to scalars first.
 
-    An existing file's own header wins over :data:`RUN_LOG_COLUMNS`, so
-    appending to a log written by a build with a different column set drops the
-    new columns instead of shifting every later row out of line.
+def _append_csv(path: Path, columns: Sequence[str], rows: Iterable[dict]) -> None:
+    """Append rows to a CSV, writing the header only for a new file.
+
+    An existing file's own header wins over ``columns``, so appending to a log
+    written by a build with a different column set drops the new columns instead
+    of shifting every later row out of line.  That is also the upgrade path: an
+    old log keeps its shape, and a new one is one new filename away.
     """
-    path = Path(log_path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
-    header: Sequence[str] = RUN_LOG_COLUMNS
+    header: Sequence[str] = columns
     fresh = True
     if path.exists() and path.stat().st_size:
         with path.open("r", encoding="utf-8", newline="") as fh:
@@ -1296,7 +1336,40 @@ def append_run_log(log_path: str | Path, record: dict) -> None:
                                 restval="", extrasaction="ignore")
         if fresh:
             writer.writeheader()
-        writer.writerow(record)
+        writer.writerows(rows)
+
+
+def append_run_log(log_path: str | Path, record: dict) -> None:
+    """Append one CSV row per run.
+
+    CSV rather than JSON so the log opens in a spreadsheet; the price is that
+    :func:`build_run_record` has to flatten everything to scalars first -- which
+    is also why *which files* failed cannot live here, and gets a second file.
+    """
+    _append_csv(Path(log_path).expanduser(), RUN_LOG_COLUMNS, [record])
+
+
+def failure_log_path(log_path: str | Path) -> Path:
+    """Where the per-file failures of ``log_path``'s runs are recorded."""
+    path = Path(log_path).expanduser()
+    return path.with_name(f"{path.stem}_failures{path.suffix or '.csv'}")
+
+
+def append_failure_log(log_path: str | Path, run_id: str, timestamp: str,
+                       errors: Sequence[tuple[str, str, str]]) -> Path:
+    """Append one row per failed file, and return the file written.
+
+    A sibling of the run log rather than a column in it: the run log is one row
+    per run and stays readable in a spreadsheet, while this is 0..n rows per
+    run.  ``run_id`` is the join between the two.  Written only when a run
+    actually failed, so a clean history never grows the extra file.
+    """
+    path = failure_log_path(log_path)
+    _append_csv(path, FAILURE_LOG_COLUMNS,
+                ({"run_id": run_id, "timestamp": timestamp, "src": src,
+                  "error_kind": kind, "error": message}
+                 for src, kind, message in errors))
+    return path
 
 
 def build_run_record(stats: RunStats, input_dir, output_dir,
@@ -1307,6 +1380,7 @@ def build_run_record(stats: RunStats, input_dir, output_dir,
     scalar.  Keys must match :data:`RUN_LOG_COLUMNS` exactly.
     """
     run = stats.as_dict()
+    run["run_id"] = stats.run_id
     run["images"] = run.pop("total")               # "total" is ambiguous in a table
     run["source_formats"] = _histogram_cell(run["source_formats"])
     if run["compression_level"] is None:           # BMP/TIFF have no control
@@ -1324,8 +1398,8 @@ def build_run_record(stats: RunStats, input_dir, output_dir,
         "input_dir": str(input_dir),
         "output_dir": str(output_dir),
         **run,
-        "estimate_error_pct": (round(100.0 * (stats.elapsed - est) / est, 1)
-                               if est else ""),
+        "estimate_time_error_pct": (round(100.0 * (stats.elapsed - est) / est, 1)
+                                    if est else ""),
         "bytes_saved_pct": (round(100.0 * saved / stats.bytes_in, 2)
                             if stats.bytes_in else ""),
         "sub_folders": len(scan.directories),
@@ -1339,7 +1413,12 @@ def build_run_record(stats: RunStats, input_dir, output_dir,
         "gpu": "; ".join(g["name"] for g in gpus),
         "gpu_driver": gpus[0]["driver"] if gpus else "",
         "gpu_memory_MiB": gpus[0]["memory_total_MiB"] if gpus else "",
-        "first_error": (f"{stats.errors[0][0]}: {stats.errors[0][1]}"
+        "error_kinds": _histogram_cell(stats.error_kinds),
+        # Not the same as `failed` once the cap bites: this is how many of them
+        # reached the failure log, so a short list is never mistaken for a
+        # complete one.
+        "failures_logged": len(stats.errors),
+        "first_error": (f"{stats.errors[0][0]}: {stats.errors[0][2]}"
                         if stats.errors else ""),
     }
 
@@ -1412,11 +1491,21 @@ def convert_dataset(
     if log_path:
         # A failed log must never fail the conversion -- but it must not be
         # silent either, or the UI reports a file that was never written.
+        record = None
         try:
-            append_run_log(log_path, build_run_record(result, input_dir,
-                                                      output_dir, scan))
+            record = build_run_record(result, input_dir, output_dir, scan)
+            append_run_log(log_path, record)
         except Exception as exc:
             result.log_error = f"{type(exc).__name__}: {exc}"
+        # Reported separately: the run log can land while its failure list does
+        # not, and saying "log not written" for that would be a lie.
+        if record is not None and result.errors:
+            try:
+                result.failures_path = str(append_failure_log(
+                    log_path, record["run_id"], record["timestamp"],
+                    result.errors))
+            except Exception as exc:
+                result.failures_error = f"{type(exc).__name__}: {exc}"
     return result
 
 

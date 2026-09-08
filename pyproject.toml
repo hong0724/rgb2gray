@@ -24,8 +24,16 @@ classifiers = [
 # tkinter is deliberately absent: it ships with CPython and is not installable
 # from PyPI.  On Debian/Ubuntu the GUI needs `sudo apt install python3-tk`.
 dependencies = [
-    "pillow>=10.0",        # every read; the default encoder for every write
-    "numpy>=1.24",         # array plumbing for GPU mode
+    # Floors are the oldest versions the suite actually passes on, not the
+    # newest available: a bound higher than the code needs drags every other
+    # package in the environment along with it.  Nothing here uses a Pillow API
+    # newer than `save(compress_level=/quality=/compression="tiff_lzw")`, and
+    # 8.2 and older have no cp310 wheel anyway, so the floor is where the suite
+    # was last run green rather than where the API demands.
+    "pillow>=8.4",         # every read; the default encoder for every write
+    # 1.21 is enough for this code, but opencv 4.8.1's typing stub subscripts
+    # numpy.dtype at import time, which 1.21 cannot do -- `import cv2` dies.
+    "numpy>=1.22",         # array plumbing for GPU mode
     # The second *encoder*, selectable in the UI.  Still imported lazily by
     # ``gray_core.cv2_module`` -- the app survives its absence with the control
     # greyed out -- but it ships by default because it is the only encoder that
@@ -33,7 +41,10 @@ dependencies = [
     # `opencv-python`, not `-headless`: this is a desktop GUI app, so the GL
     # libraries are present anyway, and the headless build would collide with
     # the plain one in any environment that already has it.
-    "opencv-python>=4.8",
+    # 4.6, not 4.10: the IMWRITE_TIFF_COMPRESSION_LZW *name* is 4.10-only, and
+    # _cv_encode() falls back to the literal 5 for older wheels.  Declaring 4.8
+    # was wrong -- the constant is missing there, so every TIFF failed.
+    "opencv-python>=4.6",
 ]
 
 [project.optional-dependencies]

@@ -480,6 +480,74 @@ def check_log(src: Path, tmp: Path, log: Path) -> None:
     check(len(again) == before + 1, "[log] appending adds one row, not a header")
 
 
+def check_failure_log(tmp: Path) -> None:
+    """A run that fails must say *which* files, not just how many."""
+    src = tmp / "broken_input"
+    (src / "sub").mkdir(parents=True)
+    rng = np.random.default_rng(1)
+    Image.fromarray(rng.integers(0, 256, (32, 48, 3), dtype=np.uint8),
+                    "RGB").save(src / "good.bmp")
+    # Scanning matches on suffix, so both are picked up as work and then fail at
+    # read -- as a corrupt file in a real dataset would.  Two shapes on purpose:
+    # a plausible BMP header that decodes to nothing raises OSError, while a
+    # file Pillow cannot place at all is the UnidentifiedImageError path.  The
+    # histogram is only worth a column if it can tell them apart.
+    (src / "broken.bmp").write_bytes(b"BM not actually a bitmap")
+    (src / "sub" / "empty.bmp").write_bytes(b"")
+
+    log = tmp / "failure_case" / "runs.csv"
+    st = run(src, tmp / "broken_out", "bmp", log_path=log)
+    check(st.ok == 1 and st.failed == 2,
+          "[failures] the run converts what it can and fails the rest",
+          f"ok={st.ok} failed={st.failed}")
+    check(st.error_kinds == {"OSError": 1, "unreadable": 1},
+          "[failures] each failure is counted under its own kind",
+          str(st.error_kinds))
+
+    fail_log = gc.failure_log_path(log)
+    check(fail_log.exists(), "[failures] failure log written", str(fail_log))
+    if not fail_log.exists():
+        return
+    with fail_log.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    check(list(rows[0]) == list(gc.FAILURE_LOG_COLUMNS),
+          "[failures] header matches the declared column order")
+    check(len(rows) == 2, "[failures] one row per failed file", f"{len(rows)} rows")
+    check({Path(r["src"]).name for r in rows} == {"broken.bmp", "empty.bmp"},
+          "[failures] the rows name the files that failed",
+          str([r["src"] for r in rows]))
+
+    with log.open(newline="", encoding="utf-8") as fh:
+        run_row = list(csv.DictReader(fh))[-1]
+    ids = {r["run_id"] for r in rows}
+    check(bool(run_row["run_id"]) and ids == {run_row["run_id"]},
+          "[failures] run_id joins the run log to the failure log",
+          f"run={run_row['run_id']!r} failures={sorted(ids)}")
+    check(run_row["error_kinds"] == "OSError:1 unreadable:1"
+          and run_row["failures_logged"] == "2",
+          "[failures] the run row summarises what the failure log details",
+          f"error_kinds={run_row['error_kinds']!r} "
+          f"failures_logged={run_row['failures_logged']!r}")
+
+    run(src, tmp / "broken_out2", "bmp", log_path=log)
+    with fail_log.open(newline="", encoding="utf-8") as fh:
+        again = list(csv.DictReader(fh))
+    check(len(again) == 4 and again[-1]["run_id"] not in ids,
+          "[failures] a second failing run appends under its own run_id",
+          f"{len(again)} rows, ids={sorted({r['run_id'] for r in again})}")
+
+    # The extra file is a cost, so a clean history must not pay it.
+    clean_src = tmp / "clean_input"
+    clean_src.mkdir()
+    Image.fromarray(rng.integers(0, 256, (32, 48, 3), dtype=np.uint8),
+                    "RGB").save(clean_src / "fine.bmp")
+    clean_log = tmp / "clean_case" / "runs.csv"
+    clean = run(clean_src, tmp / "clean_out", "bmp", log_path=clean_log)
+    check(clean.failed == 0 and not gc.failure_log_path(clean_log).exists(),
+          "[failures] a run with no failures writes no failure log",
+          f"failed={clean.failed}")
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -516,6 +584,7 @@ def main() -> int:
     check_gpu(src, tmp, outs["bmp"])
     check_cancel(src, tmp)
     check_log(src, tmp, outs["bmp"] / "runs.csv")
+    check_failure_log(tmp)
 
     failed = [r for r in RESULTS if not r[0]]
     width = max(len(name) for _ok, name, _d in RESULTS)
