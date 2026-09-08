@@ -137,7 +137,7 @@ same relative location.
 | **Workers** | **Pipeline width — the same unit in both modes.** Defaults to one per *physical* core, for every format. Worth raising for PNG and TIFF — see below. **1 runs serially, with no pool and no threads** |
 | **Batch size** (GPU mode) | Defaults to **1**; larger measured monotonically worse |
 | **Skip images already present** | Resume an interrupted run |
-| **Log this run** | Appends one CSV row per run — see below |
+| **Log this run** | On by default. Appends one CSV row per run — see below. The path follows the output folder until you type or pick one yourself; clear the field to hand it back |
 
 **One number, two costs.** Both modes default to the same width, so a CPU run
 and a GPU run of the same folder differ in one thing. What differs is how many

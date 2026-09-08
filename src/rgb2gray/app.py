@@ -77,6 +77,11 @@ class ConverterApp(tk.Tk):
         self.var_skip_existing = tk.BooleanVar(value=False)
         self.var_log = tk.BooleanVar(value=True)
         self.var_log_path = tk.StringVar()
+        # A derived log path follows the output folder; one the user typed or
+        # picked does not.  Only _set_log_path() writes the first kind, so any
+        # other write to the variable is by definition the second kind.
+        self._log_path_auto = True
+        self._writing_log_path = False
 
         self.gpu_device, self.gpu_reason = gc.detect_gpu()
         self.cv_ok, self.cv_reason = gc.detect_encoder()
@@ -90,6 +95,7 @@ class ConverterApp(tk.Tk):
         # the output folder can be set -- browsed, typed, or derived from the
         # input folder.  Without this an empty path silently writes no log.
         self.var_output.trace_add("write", lambda *_: self._sync_log_row())
+        self.var_log_path.trace_add("write", self._on_log_path_edited)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(self.POLL_MS, self._tick)
@@ -325,13 +331,33 @@ class ConverterApp(tk.Tk):
         on = self.var_log.get()
         self.field_log.entry.configure(state="normal" if on else "disabled")
         self.btn_log.set_enabled(on)
-        if on and not self.var_log_path.get():
+        if on and self._log_path_auto:
             self._default_log_path()
 
     def _default_log_path(self) -> None:
+        """Point the log at the output folder, if that is still ours to decide."""
         out = self.var_output.get().strip()
         if out:
-            self.var_log_path.set(str(Path(out) / "bmp2gray_runs.csv"))
+            self._set_log_path(str(Path(out) / "bmp2gray_runs.csv"))
+
+    def _set_log_path(self, value: str) -> None:
+        """Write a derived path without it counting as the user's choice."""
+        self._writing_log_path = True
+        try:
+            self.var_log_path.set(value)
+        finally:
+            self._writing_log_path = False
+        self._log_path_auto = True
+
+    def _on_log_path_edited(self, *_args) -> None:
+        """Typed, pasted or picked: the path stops following the output folder.
+
+        Emptying the field hands it back, which is the only undo there needs to
+        be -- clearing and re-picking an output folder restores the default.
+        """
+        if self._writing_log_path:
+            return
+        self._log_path_auto = not self.var_log_path.get().strip()
 
     def _browse_log(self) -> None:
         chosen = filedialog.asksaveasfilename(
@@ -473,9 +499,7 @@ class ConverterApp(tk.Tk):
     def _browse_output(self) -> None:
         chosen = filedialog.askdirectory(title="Select the output folder")
         if chosen:
-            self.var_output.set(chosen)
-            if self.var_log.get() and not self.var_log_path.get():
-                self._default_log_path()
+            self.var_output.set(chosen)   # its trace re-points the log path
 
     # ---------------------------------------------------------------- scan
     def _validate(self) -> tuple[Path, Path] | None:
