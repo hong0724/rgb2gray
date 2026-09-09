@@ -283,8 +283,7 @@ class ConverterApp(tk.Tk):
         # rle constrains zlib's match distance to 1, so the level has nothing
         # left to search: levels 1 and 9 emit identical bytes.  A live stepper
         # that changes nothing is worse than a greyed one.
-        inert = (key == "png" and self.var_encoder.get() == "opencv"
-                 and self.var_strategy.get() == "rle")
+        inert = key == "png" and self.var_strategy.get() == "rle"
         self.step_level.set_enabled(knob is not None and not inert)
         self.lbl_level.configure(fg=ui.MUTED if knob and not inert else ui.FAINT)
         if knob is None:
@@ -303,21 +302,23 @@ class ConverterApp(tk.Tk):
     def _sync_encoder_row(self, key: str) -> None:
         """Reading is always Pillow's; only the write side is switchable.
 
-        The PNG strategy exists only in OpenCV's encoder, so it is live only for
-        that combination -- and it is worth saying that ``rle`` makes the
-        compression level irrelevant, rather than letting a stepper that does
-        nothing look broken.
+        The strategy is a property of PNG, not of a backend -- OpenCV names the
+        zlib strategies and Pillow takes the same values through
+        ``compress_type`` -- so the control is live for either encoder, and dead
+        only where the format has no such setting.  It is worth saying that
+        ``rle`` makes the compression level irrelevant, rather than letting a
+        stepper that does nothing look broken.
         """
         self.seg_encoder.set_disabled(() if self.cv_ok else ("opencv",))
         if not self.cv_ok and self.var_encoder.get() == "opencv":
             self.var_encoder.set("pillow")
-        opencv_png = self.var_encoder.get() == "opencv" and key == "png"
-        self.seg_strategy.set_disabled(() if opencv_png else gc.PNG_STRATEGIES)
-        self.lbl_strategy.configure(fg=ui.MUTED if opencv_png else ui.FAINT)
+        is_png = key == "png"
+        self.seg_strategy.set_disabled(() if is_png else gc.PNG_STRATEGIES)
+        self.lbl_strategy.configure(fg=ui.MUTED if is_png else ui.FAINT)
         if not self.cv_ok:
             hint = self.cv_reason
-        elif opencv_png and self.var_strategy.get() == "rle":
-            hint = "rle: smaller AND faster here"
+        elif is_png and self.var_strategy.get() == "rle":
+            hint = "rle: smaller AND faster than the other two"
         else:
             hint = "reads always stay Pillow's"
         self.lbl_encoder_hint.configure(text=hint)

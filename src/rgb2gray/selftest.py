@@ -234,16 +234,18 @@ def check_gpu(src: Path, tmp: Path, cpu_out: Path) -> None:
 def check_levels(src: Path, tmp: Path) -> None:
     """The compression control must change the bytes without changing the pixels.
 
-    Pinned to Pillow so the ladder is walked where the control is live: under
-    OpenCV's ``rle`` the level is deliberately inert, and a 0 there is lifted to
-    1.  That behaviour is checked in :func:`check_encoders`.
+    Pinned to Pillow *and* to the ``default`` strategy, so the ladder is walked
+    where the control is live: under ``rle`` the level is deliberately inert for
+    either encoder, and a 0 there is lifted to 1.  That behaviour is checked in
+    :func:`check_shared_encoder_settings`.
     """
     for key, fmt in gc.OUTPUT_FORMATS.items():
         knob = fmt.level
         if knob is None:
             # A format with no control must ignore one rather than crash.
             out = tmp / f"lvl_{key}_ignored"
-            st = run(src, out, key, level=7, encoder="pillow")
+            st = run(src, out, key, level=7, encoder="pillow",
+                     png_strategy="default")
             check(st.failed == 0 and st.level is None,
                   f"[level:{key}] no control - a level is ignored, not applied",
                   f"failed={st.failed} level={st.level}")
@@ -252,7 +254,8 @@ def check_levels(src: Path, tmp: Path) -> None:
         sizes, pixels = {}, {}
         for value in (knob.lo, knob.default, knob.hi):
             out = tmp / f"lvl_{key}_{value}"
-            st = run(src, out, key, level=value, encoder="pillow")
+            st = run(src, out, key, level=value, encoder="pillow",
+                     png_strategy="default")
             check(st.level == value, f"[level:{key}] run records level {value}",
                   f"recorded {st.level}")
             files = sorted(output_images(out))
@@ -283,7 +286,6 @@ def check_levels(src: Path, tmp: Path) -> None:
           "[level] out-of-range values are clamped to the control's range")
     # Settings that cannot apply must not be reported as if they had.
     leftovers = [(f, e) for f in ("bmp", "tiff", "jpeg") for e in gc.ENCODERS]
-    leftovers += [("png", "pillow")]
     stale = [(f, e) for f, e in leftovers
              if gc.resolve_format(f, 1, encoder=e, png_strategy="rle").png_strategy]
     check(not stale, "[level] a strategy is dropped where it cannot apply", str(stale))
@@ -353,6 +355,64 @@ def check_encoders(src: Path, tmp: Path, pillow_outs: dict) -> None:
     check(digests("rle_l0") == digests("rle_l1") and z.level == 1,
           "[encoder] under rle level 0 is floored to 1, not left to store",
           f"recorded level {z.level}")
+
+
+def check_shared_encoder_settings(src: Path, tmp: Path) -> None:
+    """The zlib strategy and the TIFF predictor belong to the format, not to a
+    backend, so both encoders have to honour them identically.
+
+    Regression guard for a claim the code used to make: that only OpenCV could
+    write PNG's ``rle``.  Pillow takes the same zlib strategies through an
+    undocumented ``compress_type``, and the strategy is worth several times what
+    the choice of encoder is -- wiring it to one backend hid most of it.
+    """
+    encoders = ["pillow"] + (["opencv"] if gc.cv2_module() else [])
+
+    for enc in encoders:
+        sizes = {}
+        for strategy in gc.PNG_STRATEGIES:
+            st = run(src, tmp / f"strat_{enc}_{strategy}", "png",
+                     encoder=enc, png_strategy=strategy)
+            check(st.png_strategy == strategy and st.encoder == enc,
+                  f"[strategy:{enc}] {strategy} is recorded",
+                  f"encoder={st.encoder!r} strategy={st.png_strategy!r}")
+            sizes[strategy] = sum(p.stat().st_size
+                                  for p in output_images(tmp / f"strat_{enc}_{strategy}"))
+        check(len(set(sizes.values())) > 1,
+              f"[strategy:{enc}] the strategy actually reaches the encoder", str(sizes))
+        check(sizes["rle"] < sizes["default"],
+              f"[strategy:{enc}] rle is the smaller of the two defaults", str(sizes))
+
+        # rle caps zlib's match distance at 1, so the level has nothing left to
+        # search -- for either encoder, which is why the UI greys it out.
+        def digests(name):
+            return {p.name: hashlib.md5(p.read_bytes()).hexdigest()
+                    for p in output_images(tmp / name)}
+        for lvl in (1, 9):
+            run(src, tmp / f"rle_{enc}_l{lvl}", "png", encoder=enc,
+                png_strategy="rle", level=lvl)
+        check(digests(f"rle_{enc}_l1") == digests(f"rle_{enc}_l9"),
+              f"[strategy:{enc}] under rle levels 1-9 are byte-identical")
+
+        # A strategy must never be recorded against a format that has none.
+        st = run(src, tmp / f"strat_{enc}_bmp", "bmp", encoder=enc, png_strategy="rle")
+        check(st.png_strategy == "", f"[strategy:{enc}] only PNG records a strategy",
+              f"recorded {st.png_strategy!r}")
+
+    # TIFF: horizontal differencing, from both writers, without losing a pixel.
+    for enc in encoders:
+        out = tmp / f"tiff_pred_{enc}"
+        st = run(src, out, "tiff", encoder=enc)
+        check(st.failed == 0, f"[predictor:{enc}] TIFF run succeeded", str(st.errors[:1]))
+        files = output_images(out)
+        tags = {Image.open(p).tag_v2.get(317) for p in files}
+        check(tags == {2}, f"[predictor:{enc}] every TIFF carries predictor 2",
+              f"tags seen: {sorted(t for t in tags if t is not None)}")
+    if len(encoders) == 2:
+        a = {p.name: np.asarray(Image.open(p)) for p in output_images(tmp / "tiff_pred_pillow")}
+        b = {p.name: np.asarray(Image.open(p)) for p in output_images(tmp / "tiff_pred_opencv")}
+        same = a.keys() == b.keys() and all(np.array_equal(a[k], b[k]) for k in a)
+        check(same, "[predictor] both encoders decode to the same pixels")
 
 
 def check_format_defaults(src: Path, tmp: Path) -> None:
@@ -580,6 +640,7 @@ def main() -> int:
     check_shared_default(src, tmp)
     check_format_defaults(src, tmp)
     check_levels(src, tmp)
+    check_shared_encoder_settings(src, tmp)
     check_lossless(outs)
     check_gpu(src, tmp, outs["bmp"])
     check_cancel(src, tmp)

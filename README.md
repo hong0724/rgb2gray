@@ -132,8 +132,8 @@ same relative location.
 |---|---|
 | **Output format** | BMP / PNG / TIFF / JPEG, with the cost shown beside it |
 | **Compression** | PNG level 0–9 (default 1) or JPEG quality 1–100 (default 95). Disabled for BMP and TIFF, and for PNG under `rle`, where levels 1–9 are identical (a 0 there is lifted to 1 — see below) |
-| **Encoder** | **Pillow** (default) or **OpenCV**, which alone can write PNG's `rle` — see below. Installed for you; the control greys out only if OpenCV is later removed |
-| **PNG strategy** | OpenCV + PNG only: `default` / `rle` *(default)* / `filtered` |
+| **Encoder** | **Pillow** (default) or **OpenCV** — see below. Installed for you; the control greys out only if OpenCV is later removed |
+| **PNG strategy** | PNG only, but either encoder: `default` / `rle` *(default)* / `filtered` |
 | **Workers** | **Pipeline width — the same unit in both modes.** Defaults to one per *physical* core, for every format. Worth raising for PNG and TIFF — see below. **1 runs serially, with no pool and no threads** |
 | **Batch size** (GPU mode) | Defaults to **1**; larger measured monotonically worse |
 | **Skip images already present** | Resume an interrupted run |
@@ -173,7 +173,7 @@ box:
 hard zlib searches; the filter-plus-deflate pipeline is reversible at every
 setting. 
 
-| PNG level | Pillow | OpenCV `default` | OpenCV `rle` |
+| PNG level | Pillow `default` | OpenCV `default` | OpenCV `rle` |
 |---|---|---|---|
 | 0 | 785 MB / 1.16 s | 786 MB / 1.08 s | 786 MB / 1.04 s |
 | **1** *(default)* | 236 MB / 1.72 s | 226 MB / 1.55 s | **169 MB / 1.41 s** |
@@ -184,7 +184,12 @@ setting.
 
 
 **BMP and TIFF have no level.** BMP stores raw pixels; Pillow's TIFF writer
-accepts `compress_level` and ignores it.
+accepts `compress_level` and ignores it — measured, levels 1, 6 and 9 emit the
+same byte count. TIFF's real lever is the LZW *predictor*, and it is not a
+control: both encoders always write horizontal differencing, worth ~34 % of the
+output and still lossless. Pillow needs it passed as the raw tag
+(`tiffinfo={317: 2}`) — its documented `predictor` keyword is accepted and
+silently dropped.
 
 JPEG's control is `quality`, and it is not a lossless ladder: measured against
 the lossless output of the same frames, even q=100 differs by up to **2** grey
@@ -207,11 +212,17 @@ costs 4 % (108 ms against 104 ms for an all-OpenCV path).
 | OpenCV | 226 MB | 1.55 s |
 | OpenCV rle | **169 MB** | **1.41 s** |
 
-OpenCV rle 28 % smaller and 1.22× faster than Pillow's level 1; 8 % smaller than Pillow's
-level 9 for 1/35th of its time. 
+Those four rows predate the strategy control reaching Pillow, so each of them
+moves two things at once — `default` against `rle`, *and* one encoder against
+the other. Split apart over the same frames, the strategy is most of it: `rle`
+is worth ~24 % of the output against the same encoder's `default`, while
+changing encoder at a fixed strategy moves it ~5 %. That is why the strategy is
+wired to both encoders rather than to one.
 
-**Everywhere except PNG, Pillow is simply faster** — which is why it stays the
-default everywhere.
+Which encoder is *quicker* is not settled here, and the tables above are one
+machine's answer: re-measured on a 2-core laptop the order came out differently
+for three of the four formats. Sizes are reproducible, times are yours to
+measure — which is what the run log is for.
 
 | | Pillow | OpenCV |
 |---|---|---|

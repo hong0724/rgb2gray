@@ -36,8 +36,10 @@ dependencies = [
     "numpy>=1.22",         # array plumbing for GPU mode
     # The second *encoder*, selectable in the UI.  Still imported lazily by
     # ``gray_core.cv2_module`` -- the app survives its absence with the control
-    # greyed out -- but it ships by default because it is the only encoder that
-    # writes PNG `rle`, which is the format table's 4.6x-smaller row.
+    # greyed out -- but it ships by default so that a run can be measured
+    # against another rather than argued about, which is the whole point of
+    # having two.  (It is not needed for PNG `rle`: both encoders take the zlib
+    # strategies, see gray_core.PNG_STRATEGY_ZLIB.)
     # `opencv-python`, not `-headless`: this is a desktop GUI app, so the GL
     # libraries are present anyway, and the headless build would collide with
     # the plain one in any environment that already has it.

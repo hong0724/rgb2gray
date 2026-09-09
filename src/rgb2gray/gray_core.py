@@ -40,6 +40,7 @@ import shutil
 import subprocess
 import threading
 import time
+import zlib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -117,12 +118,14 @@ INPUT_SUFFIXES = frozenset({
 ENCODERS = ("pillow", "opencv")
 DEFAULT_ENCODER = "pillow"
 
-#: zlib strategies OpenCV exposes for PNG.  Pillow exposes none of them, which
-#: is the main reason the OpenCV backend is worth having.  ``rle`` is the
-#: default because across all 40 PNG settings (2 encoders x 3
-#: strategies x 10 levels) on 164 frames it was at once the *smallest* and the
-#: *fastest* -- 28 % smaller and 1.22x faster than Pillow's level 1, and 8 %
-#: smaller than Pillow's level 9 for 1/35th of its time.  Under ``rle`` levels
+#: zlib strategies for PNG.  **Both** encoders take them: OpenCV names them,
+#: Pillow accepts the same values through an undocumented ``compress_type`` save
+#: keyword.  Wiring them to only one backend would have put most of the win
+#: behind a backend switch -- measured over 164 reference frames, moving from
+#: ``default`` to ``rle`` is worth ~24 % of the output size, while changing
+#: encoder at a fixed strategy moves it ~5 %.  ``rle`` is the default because
+#: across all 60 PNG settings (2 encoders x 3 strategies x 10 levels) it was at
+#: once the smallest and the fastest for either encoder.  Under ``rle`` levels
 #: **1-9** give byte-identical output.  Level 0 is the exception: it stores
 #: rather than deflates, so no strategy applies and the file comes out 4.6x
 #: larger (786 MB against 169 MB over the reference 164 frames).  Since the UI
@@ -130,6 +133,15 @@ DEFAULT_ENCODER = "pillow"
 #: a 0 to 1 there rather than let a disabled control quietly cost 4.6x.
 PNG_STRATEGIES = ("default", "rle", "filtered")
 DEFAULT_PNG_STRATEGY = "rle"
+
+#: The same three settings as zlib strategy numbers.  OpenCV has named
+#: constants for them; Pillow's ``compress_type`` takes the raw zlib value, so
+#: this table is what lets one control drive both encoders.
+PNG_STRATEGY_ZLIB = {
+    "default": zlib.Z_DEFAULT_STRATEGY,
+    "rle": zlib.Z_RLE,
+    "filtered": zlib.Z_FILTERED,
+}
 
 
 def detect_encoder() -> tuple[bool, str]:
@@ -203,7 +215,14 @@ OUTPUT_FORMATS: dict[str, OutputFormat] = {
                   "0 = store, 9 = smallest, all lossless"),
     ),
     "tiff": OutputFormat(
-        "tiff", "TIFF", "TIFF", ".tiff", {"compression": "tiff_lzw"}, True,
+        # 317 is the TIFF Predictor tag and 2 is horizontal differencing, which
+        # is what OpenCV's writer has always emitted.  It has to go through
+        # `tiffinfo`: Pillow documents a `predictor` keyword, but that one is
+        # accepted and silently dropped -- the tag never reaches the file.  On
+        # the reference frames it is worth ~34 % of the TIFF output, and it
+        # stays lossless; without it the two encoders were not comparable.
+        "tiff", "TIFF", "TIFF", ".tiff",
+        {"compression": "tiff_lzw", "tiffinfo": {317: 2}}, True,
         "lossless · ~3.8x smaller, ~2.6x slower",
     ),
     "jpeg": OutputFormat(
@@ -237,10 +256,11 @@ def resolve_format(out_format: str, level: int | None = None, *,
     encoder = encoder if encoder in ENCODERS else DEFAULT_ENCODER
     strategy = (png_strategy if png_strategy in PNG_STRATEGIES
                 else DEFAULT_PNG_STRATEGY)
-    # A strategy exists only in OpenCV's PNG encoder.  Blank it everywhere else,
-    # so the run log can never report a setting that reached no encoder: a BMP
-    # run used to record whatever the PNG control happened to be left on.
-    if not (out_format == "png" and encoder == "opencv"):
+    # A strategy is a PNG idea, but not an OpenCV one -- both encoders take it.
+    # Blank it for the other formats, so the run log can never report a setting
+    # that reached no encoder: a BMP run used to record whatever the PNG control
+    # happened to be left on.
+    if out_format != "png":
         strategy = ""
 
     kwargs = fmt.save_kwargs
@@ -253,6 +273,10 @@ def resolve_format(out_format: str, level: int | None = None, *,
         if strategy == "rle":
             value = max(1, value)
         kwargs = {**kwargs, fmt.level.key: value}
+    # OpenCV takes the strategy as an imencode parameter, at write time; Pillow
+    # takes it as a save keyword, so it has to be baked in here.
+    if strategy and encoder == "pillow":
+        kwargs = {**kwargs, "compress_type": PNG_STRATEGY_ZLIB[strategy]}
     return replace(fmt, save_kwargs=kwargs, encoder=encoder,
                    png_strategy=strategy)
 
@@ -771,7 +795,11 @@ def _cv_encode(gray: np.ndarray, fmt: OutputFormat) -> bytes:
         # so the literal is what keeps an older wheel writing LZW instead of
         # failing every TIFF in the run.
         lzw = getattr(cv2, "IMWRITE_TIFF_COMPRESSION_LZW", 5)
-        params = [cv2.IMWRITE_TIFF_COMPRESSION, lzw]
+        # Horizontal differencing, matching what the Pillow side now writes.
+        # This has been OpenCV's default since at least 4.6, but the two writers
+        # only stay comparable if both say so rather than one of them assuming.
+        predictor = getattr(cv2, "IMWRITE_TIFF_PREDICTOR", 317)
+        params = [cv2.IMWRITE_TIFF_COMPRESSION, lzw, predictor, 2]
     ok, buf = cv2.imencode(fmt.suffix, gray, params)
     if not ok:
         raise RuntimeError(f"OpenCV could not encode {fmt.suffix}")
